@@ -29,8 +29,9 @@ water_switch_pin = 13
 fertilizer_switch_pin = 6
 
 # calibration values
+# 21198.4
 dry_soil_val = 20000
-wet_soil_val = 37040
+wet_soil_val = 25000
 
 optimal_tds = 600
 
@@ -52,7 +53,7 @@ def initialize_system():
     
     return
 
-def read_soil_moisture_percent(num_of_samples=50, discard=50):
+def read_soil_moisture_percent(num_of_samples=50, discard=10):
     
     readings = []
     
@@ -67,8 +68,10 @@ def read_soil_moisture_percent(num_of_samples=50, discard=50):
     soil_val = sum(readings) / len(readings)
 
     moisture = 100 * (soil_val - dry_soil_val) / (wet_soil_val - dry_soil_val)
+    moisture = max(0, min(100, moisture))  # Clamp to 0?100
     
-    print(f"Soil moisture: {moisture:.1f}%")
+    print(f"[{datetime.now().isoformat()}] READ soil moisture: {moisture:.1f}%")
+    print(f"Soil val: {soil_val}")\
     
     return moisture
 
@@ -88,8 +91,8 @@ def read_TDS(num_of_samples=50, discard=50):
     
     tds_value = (tds_voltage * 1000) / 5 * 1.5 
 
-    print(f"TDS Voltage: {tds_voltage:.3f} V")
-    print(f"TDS: {tds_value:.2f} ppm")
+    #print(f"TDS Voltage: {tds_voltage:.3f} V")
+    print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm")
     return tds_value
 
 def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
@@ -102,7 +105,7 @@ def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
             "userToken": USER_TOKEN
         }
     }
-    print(f"Sending MQTT message: {payload}")
+    print(f"[{datetime.now().isoformat()}] SEND MQTT message: {payload}")
     
     payload_str = json.dumps(payload)
     
@@ -114,7 +117,7 @@ def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
         client.disconnect()
 
     except Exception as e:
-        print(f"Failed to send MQTT message: {e}")
+        print(f"[{datetime.now().isoformat()}] ERROR Failed to send MQTT message: {e}")
     return
     
 def get_weather():
@@ -122,8 +125,10 @@ def get_weather():
     rainfall = 0
     et_ref = 0
     
-    url = "TODO"
+    url = "http://192.168.0.118:8080/api/v1/weather?userToken=" + USER_TOKEN
 
+    rainfall = None
+    et_ref = None
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -131,83 +136,80 @@ def get_weather():
         weather_data = response.json()
 
         weather = Weather.from_dict(weather_data)
+        
+        rainfall = weather.rainfall_mm
+        et_ref = weather.et_ref
 
-        print(f"Rainfall (mm): {weather.rainfall}")
-        print(f"ET Reference: {weather.et_ref}")
+        print(f"[{datetime.now().isoformat()}] FETCHED weather data: {weather}")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
+        print(f"[{datetime.now().isoformat()}] ERROR fetching data: {e}")
     
     
-    return weather.rainfall, weather.et_ref
+    return rainfall, et_ref
 
 def get_crop_info():
     
-    url = "TODO"
+    url = "http://192.168.0.118:8080/api/v1/crop?userToken=" + USER_TOKEN
 
+    crop_info = None
     try:
         response = requests.get(url)
         response.raise_for_status()
 
         crop_info = Crop.from_dict(response.json())
 
-        print(f"Min allowed moisture: {crop_info.min_allowed_moisture}")
+        print(f"[{datetime.now().isoformat()}] FETCHED crop data: {crop_info}")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
+        print(f"[{datetime.now().isoformat()}] ERROR fetching data: {e}")
     
     return crop_info
 
 def get_irrigation_data_for_user():
     
-    url = "TODO"
+    url = "http://192.168.0.118:8080/api/v1/irrigation?userToken=" + USER_TOKEN
 
+    irrigation_info = None
     try:
         response = requests.get(url)
         response.raise_for_status()
 
         irrigation_info = IrrigationData.from_dict(response.json())
 
-        print(f"Irrigation info : {irrigation_info.irrigation_start}")
+        print(f"[{datetime.now().isoformat()}] FETCHED irrigation data: {irrigation_info}")
 
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching data: {e}")
+        print(f"[{datetime.now().isoformat()}] ERROR fetching data: {e}")
     
     return irrigation_info
 
 def calculate_required_water(ET_ref: float, crop: Crop, irrigation_data : IrrigationData):
     
     K_c = get_crop_coefficient(crop, irrigation_data.irrigation_start)
-    print(f"Coefficient:  {K_c}")
-    print(f"et ref:  {ET_ref}")
     ET_crop = ET_ref * K_c
-    print(f"et crop:  {ET_crop}")
     
-    # this should be changed to by day instead of by month 
     P = irrigation_data.monthly_rainfall
     Pe = 0.8 * P - 25
     if P < 75:
         Pe = 0.6 * P - 10
     
     Pe = Pe/30
-    print(f"Pe should always be nonnegative:  {Pe}")
     
     required_water = ET_crop - Pe # value by square meter 
     
     required_water = round(required_water * irrigation_data.cultivation_area, 2)
     
+    print(f"[{datetime.now().isoformat()}] CALCULATED required irrigation water: {irrigation_info} mm/day (et_ref: {ET_ref}, Pe: {Pe})")
     return required_water
 
 
 def get_crop_coefficient(crop: Crop, irrigation_start: IrrigationData) -> float:
     
     days_since_irrigation_start = (datetime.now().date() - irrigation_start.date()).days
-    print(f"Date time now:  {datetime.now().date()}")
-    print(f"Irrigation start date :  {irrigation_start.date()}")
-    print(f"Days since irrigation start:  {days_since_irrigation_start}")
     
     if days_since_irrigation_start < 0:
-        raise ValueError("Irrigation start date is in the future.")
+        raise ValueError(f"[{datetime.now().isoformat()}] ERROR Irrigation start date is in the future.")
     
     thresholds = [
         crop.dev_num_of_days,
@@ -232,6 +234,8 @@ def supply_water(required_water, min_allowed_moisture):
     water_flow_rate = 1 # 1 L/min - TODO measure right value 
     irrigation_duration = (required_water/water_flow_rate) * 60
     
+    print(f"[{datetime.now().isoformat()}] CALCULATED irrigation duration: {irrigation_duration}")
+    
     GPIO.output(water_switch_pin, GPIO.LOW) # valve ON
     
     start_time = time.time()
@@ -252,7 +256,7 @@ def supply_water(required_water, min_allowed_moisture):
             
             required_water = max(0, ((irrigation_duration - elapsed) / 60) * water_flow_rate)
             
-            print(f"Remaining water: {required_water}")
+            print(f"[{datetime.now().isoformat()}] INFO Water supplied. Remaining water for today: {required_water}")
             return required_water
     
         time.sleep(0.1) # sleep to avoid busy waiting    
@@ -270,13 +274,13 @@ def supply_fertilizer(tds):
             
             if new_tds >= optimal_tds:
                 GPIO.output(fertilizer_switch_pin, GPIO.HIGH) # valve OFF
-                print(f"No fertilizer added. Optimal tds value reached.")
+                print(f"[{datetime.now().isoformat()}] INFO Fertilizer supplied. Optimal tds value reached. TDS value: {new_tds}")
                 break
             
             time.sleep(0.1) # sleep to avoid busy waiting
             
     else:
-       print(f"No fertilizer added. TDS value: {tds}") 
+       print(f"[{datetime.now().isoformat()}] INFO No fertilizer supplied. TDS value: {tds}") 
     
     return
 
@@ -288,56 +292,43 @@ def loop():
     while True:
 
         soil_moisture = read_soil_moisture_percent()
-        
         tds = read_TDS()
         
         send_soil_moisture_and_TDS_to_service(soil_moisture, tds)
         
-        rainfall = 0 # TODO remove once GET weather endpoin is in place
-        et_ref = 5.0 # TODO remove once GET weather endpoin is in place
-        #rainfall, etRef = get_weather()
+        rainfall, et_ref = get_weather()
+        if rainfall is None or et_ref is None:
+            time.sleep(15 * 60)
+            continue
+            
         
-        crop_info = Crop(
-            name="Lettuce",
-            min_allowed_moisture=1000.0,
-            coefficient_dev=1.0,
-            coefficient_mid=1.1,
-            coefficient_late=0.9,
-            dev_num_of_days=30,
-            mid_num_of_days=40,
-            lat_num_of_days=20
-        ) # TODO remove once get crop endpoint is in place 
-        # crop_info = get_crop_info()
+        crop_info = get_crop_info()
+        if crop_info is None:
+            time.sleep(15 * 60)
+            continue
 
         supply_fertilizer(tds)
         
         
         if soil_moisture < crop_info.min_allowed_moisture and rainfall == 0:
+            print(f"[{datetime.now().isoformat()}] INFO soil moisture < min_allowed and no rain.")
+            
             current_time = datetime.now()
-            time_diff = current_time - last_water_calc_time
-            print(f" {time_diff}")
+            time_diff = current_time - last_water_calc_time   
             
-            
-            irrigation_info = IrrigationData(
-                irrigation_start=datetime(2025,6,20),
-                monthly_rainfall_month="May",
-                monthly_rainfall=54,
-                cultivation_area=0.21
-            ) # TODO remove once irrgation endpoint is in place 
-            # irrigation_info = get_irrigation_data_for_user()
+            irrigation_info = get_irrigation_data_for_user()
             
             if time_diff >= timedelta(hours=24):
                 required_water = calculate_required_water(et_ref, crop_info, irrigation_info)
-                
                 last_water_calc_time = datetime.now()
-                print(f"Water requirement calculated at: {last_water_calc_time}")
-                print(f"Required water: {required_water}")
                             
             if required_water > 0:
+                print(f"[{datetime.now().isoformat()}] INFO Supplying water")
                 supply_water(required_water, crop_info.min_allowed_moisture)
+        else:
+            print(f"[{datetime.now().isoformat()}] INFO No water supplied. Soil moisture: {soil_moisture}, rainfall: {rainfall} ")
         
-        # 15 min sleep 
-        time.sleep(15 * 60)
+        time.sleep(30 * 60) # 30 min sleep 
 
 def destroy():
     GPIO.cleanup()
