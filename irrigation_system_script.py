@@ -1,5 +1,6 @@
 import board
 import busio
+import RPi.GPIO as GPIO
 
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
@@ -24,6 +25,9 @@ i2c_3 = ExtendedI2C(3)
 ads_tds = ADS.ADS1115(i2c_3)
 tds_chan = AnalogIn(ads_moisture, ADS.P0)
 
+water_switch_pin = 13
+
+# calibration values
 dry_soil_val = 21200
 wet_soil_val = 22040
 
@@ -33,6 +37,14 @@ MQTT_PORT = 1883
 MQTT_TOPIC = "sensor-data"
 USER_TOKEN = "123"
 
+
+def initialize_system():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(water_switch_pin, GPIO.OUT)
+    # pump should be switched off at start 
+    GPIO.output(water_switch_pin, GPIO.HIGH)
+    
+    return
 
 def read_soil_moisture_percent():
 
@@ -186,26 +198,36 @@ def get_crop_coefficient(crop: Crop, irrigation_start: IrrigationData) -> float:
             return coefficient 
     
 
-def supply_water(required_water):
+def supply_water(required_water, min_allowed_moisture):
     
+    sensor_check_interval = 5 # check soil moisture every 5 seconds 
     water_flow_rate = 1 # 1 L/min - TODO measure right value 
     irrigation_duration = (required_water/water_flow_rate) * 60
     
-    # TODO turn ON valve 
-
+    GPIO.output(water_switch_pin, GPIO.LOW) # valve ON
+    
     start_time = time.time()
+    soil_moisture = 0
+    last_moisture_check = start_time
     while True:
-        #check if soil moisture is greater than min allowed,
+        current_time = time.time()
         
-        elapsed = time.time() - start_time
-        if elapsed >= irrigation_duration:
-            # turn valve off 
-            # calculate the remainingrequired water 
-            # return the remaining required water 
-            print(f"Timer over for: {irrigation_duration}")
-            break
-        # sleep to avoid busy waiting
-        time.sleep(0.1)
+        elapsed = current_time - start_time
+        
+        if current_time - last_moisture_check >= sensor_check_interval:
+            soil_moisture = read_soil_moisture_percent()
+            last_moisture_check = current_time
+        
+        if elapsed >= irrigation_duration or soil_moisture > min_allowed_moisture:
+
+            GPIO.output(water_switch_pin, GPIO.HIGH) # valve OFF
+            
+            required_water = max(0, ((irrigation_duration - elapsed) / 60) * water_flow_rate)
+            
+            print(f"Remaining water: {required_water}")
+            return required_water
+    
+        time.sleep(0.1) # sleep to avoid busy waiting
     
     
     return
@@ -270,16 +292,19 @@ def loop():
                 print(f"Required water: {required_water}")
                             
             if required_water > 0:
-                supply_water(required_water)
+                supply_water(required_water, crop_info.min_allowed_moisture)
         
         # 15 min sleep 
         time.sleep(15 * 60)
 
 def destroy():
+    GPIO.cleanup()
     return 
 
 
 if __name__=="__main__":
+    
+    initialize_system()
     
     try:
         loop()
