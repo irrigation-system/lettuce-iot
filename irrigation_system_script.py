@@ -26,10 +26,13 @@ ads_tds = ADS.ADS1115(i2c_3)
 tds_chan = AnalogIn(ads_moisture, ADS.P0)
 
 water_switch_pin = 13
+fertilizer_switch_pin = 6
 
 # calibration values
-dry_soil_val = 21200
-wet_soil_val = 22040
+dry_soil_val = 20000
+wet_soil_val = 37040
+
+optimal_tds = 600
 
 # mqtt configuration
 MQTT_BROKER = "192.168.0.224"
@@ -41,23 +44,48 @@ USER_TOKEN = "123"
 def initialize_system():
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(water_switch_pin, GPIO.OUT)
-    # pump should be switched off at start 
+    GPIO.setup(fertilizer_switch_pin, GPIO.OUT)
+    
+    # pumps should be switched off at start 
     GPIO.output(water_switch_pin, GPIO.HIGH)
+    GPIO.output(fertilizer_switch_pin, GPIO.HIGH)
     
     return
 
-def read_soil_moisture_percent():
+def read_soil_moisture_percent(num_of_samples=50, discard=50):
+    
+    readings = []
+    
+    for _ in range(discard):
+        _ = moisture_chan.value
+    
+    for _ in range(num_of_samples):
+        val = moisture_chan.value
+        readings.append(val)
+        time.sleep(0.001)
+        
+    soil_val = sum(readings) / len(readings)
 
-    soil_val = moisture_chan.value
     moisture = 100 * (soil_val - dry_soil_val) / (wet_soil_val - dry_soil_val)
     
     print(f"Soil moisture: {moisture:.1f}%")
     
     return moisture
 
-def read_TDS():
+def read_TDS(num_of_samples=50, discard=50):
     
-    tds_voltage = tds_chan.voltage
+    readings = []
+    
+    for _ in range(discard):
+        _ = tds_chan.voltage
+    
+    for _ in range(num_of_samples):
+        val = tds_chan.voltage
+        readings.append(val)
+        time.sleep(0.001)
+        
+    tds_voltage = sum(readings) / len(readings)
+    
     tds_value = (tds_voltage * 1000) / 5 * 1.5 
 
     print(f"TDS Voltage: {tds_voltage:.3f} V")
@@ -227,14 +255,28 @@ def supply_water(required_water, min_allowed_moisture):
             print(f"Remaining water: {required_water}")
             return required_water
     
-        time.sleep(0.1) # sleep to avoid busy waiting
+        time.sleep(0.1) # sleep to avoid busy waiting    
     
     
     return
 
 def supply_fertilizer(tds):
-    # TODO is TDS too low
-    # then turn the valve on until its high enough
+
+    if tds < optimal_tds:
+        GPIO.output(fertilizer_switch_pin, GPIO.LOW) # valve ON
+        
+        while True:
+            new_tds = read_TDS()
+            
+            if new_tds >= optimal_tds:
+                GPIO.output(fertilizer_switch_pin, GPIO.HIGH) # valve OFF
+                print(f"No fertilizer added. Optimal tds value reached.")
+                break
+            
+            time.sleep(0.1) # sleep to avoid busy waiting
+            
+    else:
+       print(f"No fertilizer added. TDS value: {tds}") 
     
     return
 
