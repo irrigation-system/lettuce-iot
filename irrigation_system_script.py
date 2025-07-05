@@ -39,7 +39,7 @@ optimal_tds = 600
 MQTT_BROKER = "192.168.0.224"
 MQTT_PORT = 1883
 MQTT_TOPIC = "sensor-data"
-USER_TOKEN = "123"
+USER_TOKEN = "qPw6YNmSxgKndSrzr6vHSL"
 
 
 def initialize_system():
@@ -48,8 +48,8 @@ def initialize_system():
     GPIO.setup(fertilizer_switch_pin, GPIO.OUT)
     
     # pumps should be switched off at start 
-    GPIO.output(water_switch_pin, GPIO.HIGH)
-    GPIO.output(fertilizer_switch_pin, GPIO.HIGH)
+    GPIO.output(water_switch_pin, GPIO.LOW)
+    GPIO.output(fertilizer_switch_pin, GPIO.LOW)
     
     return
 
@@ -57,21 +57,24 @@ def read_soil_moisture_percent(num_of_samples=50, discard=10):
     
     readings = []
     
-    for _ in range(discard):
-        _ = moisture_chan.value
-    
-    for _ in range(num_of_samples):
-        val = moisture_chan.value
-        readings.append(val)
-        time.sleep(0.001)
+    try: 
+        for _ in range(discard):
+            _ = moisture_chan.value
         
-    soil_val = sum(readings) / len(readings)
+        for _ in range(num_of_samples):
+            val = moisture_chan.value
+            readings.append(val)
+            time.sleep(0.001)
+            
+        soil_val = sum(readings) / len(readings)
 
-    moisture = 100 * (soil_val - dry_soil_val) / (wet_soil_val - dry_soil_val)
-    moisture = max(0, min(100, moisture))  # Clamp to 0?100
-    
-    print(f"[{datetime.now().isoformat()}] READ soil moisture: {moisture:.1f}%")
-    print(f"Soil val: {soil_val}")\
+        moisture = 100 * (soil_val - dry_soil_val) / (wet_soil_val - dry_soil_val)
+        moisture = max(0, min(100, moisture))  # Clamp to 0?100
+        
+        print(f"[{datetime.now().isoformat()}] READ soil moisture: {moisture:.1f}%, soil val: {soil_val}")
+    except Exception as e:
+        print(f"[{datetime.now().isoformat()}] ERROR Failed reading soil moisture: {e}")
+        return -1
     
     return moisture
 
@@ -91,7 +94,7 @@ def read_TDS(num_of_samples=50, discard=50):
     
     tds_value = (tds_voltage * 1000) / 5 * 1.5 
 
-    #print(f"TDS Voltage: {tds_voltage:.3f} V")
+    print(f"TDS Voltage: {tds_voltage:.3f} V")
     print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm")
     return tds_value
 
@@ -184,23 +187,23 @@ def get_irrigation_data_for_user():
     
     return irrigation_info
 
-def calculate_required_water(ET_ref: float, crop: Crop, irrigation_data : IrrigationData):
+def calculate_required_water(ET_ref: float, crop: Crop, irrigation_info : IrrigationData):
     
-    K_c = get_crop_coefficient(crop, irrigation_data.irrigation_start)
+    K_c = get_crop_coefficient(crop, irrigation_info.irrigation_start)
     ET_crop = ET_ref * K_c
     
-    P = irrigation_data.monthly_rainfall
+    P = irrigation_info.monthly_rainfall
     Pe = 0.8 * P - 25
     if P < 75:
         Pe = 0.6 * P - 10
     
     Pe = Pe/30
     
-    required_water = ET_crop - Pe # value by square meter 
+    required_water = ET_crop - Pe # liters by square meter 
     
-    required_water = round(required_water * irrigation_data.cultivation_area, 2)
+    required_water = round(required_water * irrigation_info.cultivation_area, 2)
     
-    print(f"[{datetime.now().isoformat()}] CALCULATED required irrigation water: {irrigation_info} mm/day (et_ref: {ET_ref}, Pe: {Pe})")
+    print(f"[{datetime.now().isoformat()}] CALCULATED required irrigation water: {required_water} mm/day (et_ref: {ET_ref}, Pe: {Pe})")
     return required_water
 
 
@@ -228,15 +231,14 @@ def get_crop_coefficient(crop: Crop, irrigation_start: IrrigationData) -> float:
             return coefficient 
     
 
-def supply_water(required_water, min_allowed_moisture):
+def supply_water(required_water, min_allowed_moisture, flow_rate = 1.750):
     
     sensor_check_interval = 5 # check soil moisture every 5 seconds 
-    water_flow_rate = 1 # 1 L/min - TODO measure right value 
-    irrigation_duration = (required_water/water_flow_rate) * 60
+    irrigation_duration = (required_water/flow_rate) * 60
     
     print(f"[{datetime.now().isoformat()}] CALCULATED irrigation duration: {irrigation_duration}")
     
-    GPIO.output(water_switch_pin, GPIO.LOW) # valve ON
+    GPIO.output(water_switch_pin, GPIO.HIGH) # valve ON
     
     start_time = time.time()
     soil_moisture = 0
@@ -252,9 +254,9 @@ def supply_water(required_water, min_allowed_moisture):
         
         if elapsed >= irrigation_duration or soil_moisture > min_allowed_moisture:
 
-            GPIO.output(water_switch_pin, GPIO.HIGH) # valve OFF
+            GPIO.output(water_switch_pin, GPIO.LOW) # valve OFF
             
-            required_water = max(0, ((irrigation_duration - elapsed) / 60) * water_flow_rate)
+            required_water = max(0, ((irrigation_duration - elapsed) / 60) * flow_rate)
             
             print(f"[{datetime.now().isoformat()}] INFO Water supplied. Remaining water for today: {required_water}")
             return required_water
@@ -264,23 +266,29 @@ def supply_water(required_water, min_allowed_moisture):
     
     return
 
-def supply_fertilizer(tds):
+def supply_fertilizer(tds, required_water, fertilizer_per_liter=0.015, flow_rate = 1.750):
 
-    if tds < optimal_tds:
-        GPIO.output(fertilizer_switch_pin, GPIO.LOW) # valve ON
+    fertilizer_needed = required_water * fertilizer_per_liter
+    fertilization_duration = (fertilizer_needed/flow_rate) * 60
+    print(f"[{datetime.now().isoformat()}] CALCULATED fertilizer needed: {fertilizer_needed}")
+    print(f"[{datetime.now().isoformat()}] CALCULATED fertilization duration: {fertilization_duration}")
+    
+    GPIO.output(fertilizer_switch_pin, GPIO.HIGH) # valve ON
+    
+    start_time = time.time()
+    
+    while True:
+        current_time = time.time()
+        elapsed = current_time - start_time
         
-        while True:
-            new_tds = read_TDS()
-            
-            if new_tds >= optimal_tds:
-                GPIO.output(fertilizer_switch_pin, GPIO.HIGH) # valve OFF
-                print(f"[{datetime.now().isoformat()}] INFO Fertilizer supplied. Optimal tds value reached. TDS value: {new_tds}")
-                break
-            
-            time.sleep(0.1) # sleep to avoid busy waiting
-            
-    else:
-       print(f"[{datetime.now().isoformat()}] INFO No fertilizer supplied. TDS value: {tds}") 
+        new_tds = read_TDS()
+        
+        if new_tds >= optimal_tds or elapsed >= fertilization_duration:
+            GPIO.output(fertilizer_switch_pin, GPIO.LOW) # valve OFF
+            print(f"[{datetime.now().isoformat()}] INFO Fertilizer supplied. Optimal tds value reached. TDS value: {new_tds}")
+            break
+        
+        time.sleep(0.1) # sleep to avoid busy waiting
     
     return
 
@@ -288,47 +296,66 @@ def loop():
     
     required_water = 0;
     last_water_calc_time = datetime(2000, 1, 1)
+    last_fertilizer_added_time = datetime(2000, 1, 1)
     
     while True:
 
         soil_moisture = read_soil_moisture_percent()
+        
+        if soil_moisture == -1:
+            print(f"[{datetime.now().isoformat()}] ERROR Unable to read soil moisture, waiting for 5 min.")
+            time.sleep(5 * 60)
+            continue
+            
         tds = read_TDS()
         
         send_soil_moisture_and_TDS_to_service(soil_moisture, tds)
         
         rainfall, et_ref = get_weather()
         if rainfall is None or et_ref is None:
+            print(f"[{datetime.now().isoformat()}] INFO API unavailable, waiting for 15 min.")
             time.sleep(15 * 60)
             continue
             
-        
         crop_info = get_crop_info()
         if crop_info is None:
+            print(f"[{datetime.now().isoformat()}] INFO API unavailable, waiting for 15 min..")
             time.sleep(15 * 60)
             continue
-
-        supply_fertilizer(tds)
-        
         
         if soil_moisture < crop_info.min_allowed_moisture and rainfall == 0:
-            print(f"[{datetime.now().isoformat()}] INFO soil moisture < min_allowed and no rain.")
+            print(f"[{datetime.now().isoformat()}] INFO soil moisture ({soil_moisture}) < min_allowed ({crop_info.min_allowed_moisture}) and no rain.")
             
-            current_time = datetime.now()
-            time_diff = current_time - last_water_calc_time   
+            duration_since_last_irrigation = datetime.now() - last_water_calc_time   
             
             irrigation_info = get_irrigation_data_for_user()
+            if irrigation_info is None:
+                print(f"[{datetime.now().isoformat()}] INFO API unavailable, waiting for 15 min..")
+                time.sleep(15 * 60)
+                continue
             
-            if time_diff >= timedelta(hours=24):
+            if duration_since_last_irrigation >= timedelta(hours=24):
                 required_water = calculate_required_water(et_ref, crop_info, irrigation_info)
                 last_water_calc_time = datetime.now()
                             
             if required_water > 0:
                 print(f"[{datetime.now().isoformat()}] INFO Supplying water")
-                supply_water(required_water, crop_info.min_allowed_moisture)
+                new_required_water = supply_water(required_water, crop_info.min_allowed_moisture)
+                
+                # add fertilizer to water 
+                duration_since_last_fertilization = datetime.now() - last_fertilizer_added_time
+        
+                if duration_since_last_fertilization >= timedelta(hours=168):
+                    print(f"[{datetime.now().isoformat()}] INFO A week passed, add fertilizer")
+                    water_supplied = required_water - new_required_water
+                    supply_fertilizer(tds, water_supplied)
+                    last_fertilizer_added_time = datetime.now()
+                required_water = new_required_water
+                
         else:
             print(f"[{datetime.now().isoformat()}] INFO No water supplied. Soil moisture: {soil_moisture}, rainfall: {rainfall} ")
         
-        time.sleep(30 * 60) # 30 min sleep 
+        time.sleep(30 * 60) # 30 min sleep
 
 def destroy():
     GPIO.cleanup()
