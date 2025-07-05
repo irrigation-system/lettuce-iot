@@ -39,7 +39,7 @@ optimal_tds = 600
 MQTT_BROKER = "192.168.0.224"
 MQTT_PORT = 1883
 MQTT_TOPIC = "sensor-data"
-USER_TOKEN = "qPw6YNmSxgKndSrzr6vHSL"
+USER_TOKEN = "USER_TOKEN"
 
 
 def initialize_system():
@@ -94,8 +94,7 @@ def read_TDS(num_of_samples=50, discard=50):
     
     tds_value = (tds_voltage * 1000) / 5 * 1.5 
 
-    print(f"TDS Voltage: {tds_voltage:.3f} V")
-    print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm")
+    print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm, ,voltage: {tds_voltage:.3f} V")
     return tds_value
 
 def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
