@@ -39,7 +39,7 @@ optimal_tds = 600
 MQTT_BROKER = "192.168.0.224"
 MQTT_PORT = 1883
 MQTT_TOPIC = "sensor-data"
-USER_TOKEN = "USER_TOKEN"
+USER_TOKEN = "TOKEN"
 
 
 def initialize_system():
@@ -82,19 +82,24 @@ def read_TDS(num_of_samples=50, discard=50):
     
     readings = []
     
-    for _ in range(discard):
-        _ = tds_chan.voltage
-    
-    for _ in range(num_of_samples):
-        val = tds_chan.voltage
-        readings.append(val)
-        time.sleep(0.001)
+    try: 
+        for _ in range(discard):
+            _ = tds_chan.voltage
         
-    tds_voltage = sum(readings) / len(readings)
-    
-    tds_value = (tds_voltage * 1000) / 5 * 1.5 
+        for _ in range(num_of_samples):
+            val = tds_chan.voltage
+            readings.append(val)
+            time.sleep(0.001)
+            
+        tds_voltage = sum(readings) / len(readings)
+        
+        tds_value = (tds_voltage * 1000) / 5 * 1.5 
 
-    print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm, ,voltage: {tds_voltage:.3f} V")
+        print(f"[{datetime.now().isoformat()}] READ TDS: {tds_value:.2f} ppm, ,voltage: {tds_voltage:.3f} V")
+    except Exception as e:
+        print(f"[{datetime.now().isoformat()}] ERROR Failed reading soil TDS: {e}")
+        return -1
+    
     return tds_value
 
 def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
@@ -280,14 +285,13 @@ def supply_fertilizer(tds, required_water, fertilizer_per_liter=0.015, flow_rate
         current_time = time.time()
         elapsed = current_time - start_time
         
-        new_tds = read_TDS()
-        
-        if new_tds >= optimal_tds or elapsed >= fertilization_duration:
+        if tds >= optimal_tds or elapsed >= fertilization_duration:
             GPIO.output(fertilizer_switch_pin, GPIO.LOW) # valve OFF
-            print(f"[{datetime.now().isoformat()}] INFO Fertilizer supplied. Optimal tds value reached. TDS value: {new_tds}")
+            print(f"[{datetime.now().isoformat()}] INFO Fertilizer supplied. Optimal tds value reached. TDS value: {tds}")
             break
         
         time.sleep(0.1) # sleep to avoid busy waiting
+        tds = read_TDS()
     
     return
 
