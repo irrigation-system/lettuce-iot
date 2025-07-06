@@ -28,12 +28,7 @@ tds_chan = AnalogIn(ads_moisture, ADS.P0)
 water_switch_pin = 13
 fertilizer_switch_pin = 6
 
-# calibration values
-# 21198.4
-dry_soil_val = 20000
-wet_soil_val = 25000
-
-optimal_tds = 600
+optimal_tds = 896.90
 
 # mqtt configuration
 MQTT_BROKER = "192.168.0.224"
@@ -68,8 +63,7 @@ def read_soil_moisture_percent(num_of_samples=50, discard=10):
             
         soil_val = sum(readings) / len(readings)
 
-        moisture = 100 * (soil_val - dry_soil_val) / (wet_soil_val - dry_soil_val)
-        moisture = max(0, min(100, moisture))  # Clamp to 0?100
+        moisture = interpolate_moisture(soil_val)
         
         print(f"[{datetime.now().isoformat()}] READ soil moisture: {moisture:.1f}%, soil val: {soil_val}")
     except Exception as e:
@@ -101,6 +95,24 @@ def read_TDS(num_of_samples=50, discard=50):
         return -1
     
     return tds_value
+
+def interpolate_moisture(sensor_val):
+    calibration = [(23000.0, 0.0),
+                   (22000.0, 10.0),
+                   (17000.0, 45.0),
+                   (10000.0, 100.0)]
+    
+    for i in range(len(calibration) -1):
+        val_1, percent_1 = calibration[i]
+        val_2, percent_2 = calibration[i+1]
+        
+        if val_2 <= sensor_val <= val_1:
+            return percent_1 + (percent_2 - percent_1) * (sensor_val - val_1) / (val_2 - val_1)
+        
+    if sensor_val < 10000.0:
+        return 100.0
+    elif sensor_val > 23000.0:
+        return 0.0
 
 def send_soil_moisture_and_TDS_to_service(soil_moisture: float, tds: float):
     
@@ -270,7 +282,7 @@ def supply_water(required_water, min_allowed_moisture, flow_rate = 1.750):
     
     return
 
-def supply_fertilizer(tds, required_water, fertilizer_per_liter=0.015, flow_rate = 1.750):
+def supply_fertilizer(tds, required_water, fertilizer_per_liter=0.115, flow_rate = 1.750):
 
     fertilizer_needed = required_water * fertilizer_per_liter
     fertilization_duration = (fertilizer_needed/flow_rate) * 60
@@ -304,13 +316,14 @@ def loop():
     while True:
 
         soil_moisture = read_soil_moisture_percent()
-        
+        time.sleep(10)
         if soil_moisture == -1:
             print(f"[{datetime.now().isoformat()}] ERROR Unable to read soil moisture, waiting for 5 min.")
             time.sleep(5 * 60)
             continue
             
         tds = read_TDS()
+        time.sleep(2)
         
         send_soil_moisture_and_TDS_to_service(soil_moisture, tds)
         
